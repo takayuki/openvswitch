@@ -402,6 +402,7 @@ static int queue_userspace_packet(struct net *net, int dp_ifindex,
 	struct sk_buff *nskb = NULL;
 	struct sk_buff *user_skb; /* to be queued to userspace */
 	struct nlattr *nla;
+	unsigned int size;
 	int err;
 
 	if (vlan_tx_tag_present(skb)) {
@@ -423,7 +424,9 @@ static int queue_userspace_packet(struct net *net, int dp_ifindex,
 		goto out;
 	}
 
-	user_skb = genlmsg_new(upcall_msg_size(skb, upcall_info->userdata), GFP_ATOMIC);
+	size = genlmsg_total_size(upcall_msg_size(skb, upcall_info->userdata));
+	user_skb = netlink_alloc_skb(net->genl_sock, size,
+				     upcall_info->portid, GFP_ATOMIC);
 	if (!user_skb) {
 		err = -ENOMEM;
 		goto out;
@@ -721,13 +724,17 @@ error:
 	return err;
 }
 
-static struct sk_buff *ovs_flow_cmd_alloc_info(struct sw_flow *flow)
+static struct sk_buff *ovs_flow_cmd_alloc_info(struct net *net,
+					       struct sw_flow *flow,
+					       u32 portid)
 {
 	const struct sw_flow_actions *sf_acts;
+	unsigned int size;
 
 	sf_acts = ovsl_dereference(flow->sf_acts);
 
-	return genlmsg_new(ovs_flow_cmd_msg_size(sf_acts), GFP_KERNEL);
+	size = genlmsg_total_size(ovs_flow_cmd_msg_size(sf_acts));
+	return netlink_alloc_skb(net->genl_sock, size, portid, GFP_KERNEL);
 }
 
 static struct sk_buff *ovs_flow_cmd_build_info(struct sw_flow *flow,
@@ -737,7 +744,7 @@ static struct sk_buff *ovs_flow_cmd_build_info(struct sw_flow *flow,
 	struct sk_buff *skb;
 	int retval;
 
-	skb = ovs_flow_cmd_alloc_info(flow);
+	skb = ovs_flow_cmd_alloc_info(dp->net, flow, portid);
 	if (!skb)
 		return ERR_PTR(-ENOMEM);
 
@@ -962,7 +969,7 @@ static int ovs_flow_cmd_del(struct sk_buff *skb, struct genl_info *info)
 		goto unlock;
 	}
 
-	reply = ovs_flow_cmd_alloc_info(flow);
+	reply = ovs_flow_cmd_alloc_info(dp->net, flow, info->snd_portid);
 	if (!reply) {
 		err = -ENOMEM;
 		goto unlock;
@@ -1110,9 +1117,11 @@ static struct sk_buff *ovs_dp_cmd_build_info(struct datapath *dp, u32 portid,
 					     u32 seq, u8 cmd)
 {
 	struct sk_buff *skb;
+	unsigned int size;
 	int retval;
 
-	skb = genlmsg_new(ovs_dp_cmd_msg_size(), GFP_KERNEL);
+	size = genlmsg_total_size(ovs_dp_cmd_msg_size());
+	skb = netlink_alloc_skb(dp->net->genl_sock, size, portid, GFP_KERNEL);
 	if (!skb)
 		return ERR_PTR(-ENOMEM);
 
@@ -1462,9 +1471,12 @@ struct sk_buff *ovs_vport_cmd_build_info(struct vport *vport, u32 portid,
 					 u32 seq, u8 cmd)
 {
 	struct sk_buff *skb;
+	unsigned int size;
 	int retval;
 
-	skb = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_ATOMIC);
+	size = nlmsg_total_size(NLMSG_DEFAULT_SIZE);
+	skb = netlink_alloc_skb(vport->dp->net->genl_sock, size,
+				portid, GFP_ATOMIC);
 	if (!skb)
 		return ERR_PTR(-ENOMEM);
 
@@ -1590,6 +1602,7 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	struct nlattr **a = info->attrs;
 	struct sk_buff *reply;
 	struct vport *vport;
+	unsigned int size;
 	int err;
 
 	ovs_lock();
@@ -1604,7 +1617,9 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 		goto exit_unlock;
 	}
 
-	reply = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	size = nlmsg_total_size(NLMSG_DEFAULT_SIZE);
+	reply = netlink_alloc_skb(vport->dp->net->genl_sock, size,
+				  info->snd_portid, GFP_KERNEL);
 	if (!reply) {
 		err = -ENOMEM;
 		goto exit_unlock;

@@ -16,4 +16,12 @@
 #define NLMSG_DEFAULT_SIZE (NLMSG_GOODSIZE - NLMSG_HDRLEN)
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+static inline struct sk_buff *
+netlink_alloc_skb(struct sock *ssk, unsigned int size, u32 dst_portid,
+		  gfp_t gfp_mask)
+{
+	return alloc_skb(size, gfp_mask);
+}
+#endif
 #endif

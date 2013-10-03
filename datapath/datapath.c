@@ -285,6 +285,18 @@ void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
 			if (ovs_ip_defrag(p, skb))
 				return;
 			break;
+		case OVS_VPORT_TYPE_GRE:
+		case OVS_VPORT_TYPE_VXLAN:
+		case OVS_VPORT_TYPE_GRE64:
+		case OVS_VPORT_TYPE_LISP:
+			skb_reset_mac_header(skb);
+			if (!skb_pull_inline(skb, ETH_HLEN))
+				return;
+			skb_reset_network_header(skb);
+			skb_push(skb, ETH_HLEN);
+			if (ovs_ip_defrag(p, skb))
+				return;
+			break;
 		default:
 			break;
 		}

@@ -99,6 +99,7 @@ struct ovs_skb_cb {
 	struct sw_flow		*flow;
 	struct sw_flow_key	*pkt_key;
 	struct ovs_key_ipv4_tunnel  *tun_key;
+	u16 frag_max_size;
 };
 #define OVS_CB(skb) ((struct ovs_skb_cb *)(skb)->cb)
 

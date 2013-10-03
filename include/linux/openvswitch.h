@@ -92,6 +92,7 @@ enum ovs_datapath_attr {
 	OVS_DP_ATTR_NAME,       /* name of dp_ifindex netdev */
 	OVS_DP_ATTR_UPCALL_PID, /* Netlink PID to receive upcalls */
 	OVS_DP_ATTR_STATS,      /* struct ovs_dp_stats */
+	OVS_DP_ATTR_IPV4_REASM, /* Flag to reassemble fragments */
 	__OVS_DP_ATTR_MAX
 };
 
@@ -230,6 +231,7 @@ enum ovs_vport_attr {
 	OVS_VPORT_ATTR_OPTIONS, /* nested attributes, varies by vport type */
 	OVS_VPORT_ATTR_UPCALL_PID, /* u32 Netlink PID to receive upcalls */
 	OVS_VPORT_ATTR_STATS,	/* struct ovs_vport_stats */
+	OVS_VPORT_ATTR_IPV4_REASM, /* Flag to reassemble fragments */
 	__OVS_VPORT_ATTR_MAX
 };
 

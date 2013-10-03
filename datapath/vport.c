@@ -134,6 +134,7 @@ struct vport *ovs_vport_alloc(int priv_size, const struct vport_ops *ops,
 	vport->port_no = parms->port_no;
 	vport->upcall_portid = parms->upcall_portid;
 	vport->ops = ops;
+	vport->ipv4_reasm = parms->ipv4_reasm;
 	INIT_HLIST_NODE(&vport->dp_hash_node);
 
 	vport->percpu_stats = alloc_percpu(struct pcpu_tstats);

@@ -215,6 +215,57 @@ void ovs_dp_detach_port(struct vport *p)
 	ovs_vport_del(p);
 }
 
+/* TODO: Fabricate a distinct user of ip_defrag. Define a unique value
+ * without conflict with others. See enum ip_defrag_users in net/ip.h.
+ * IP_DEFRAG_OVS should be defined as an "official" member of
+ * ip_defrag_users in the upstream kernel tree. */
+#define IP_DEFRAG_OVS	   (IP_DEFRAG_MACVLAN + 1)
+#define IP_DEFRAG_OVS_END  (IP_DEFRAG_OVS + DP_MAX_PORTS)
+
+static int ovs_ip_defrag(struct vport *vport, struct sk_buff *skb)
+{
+	u32 user = IP_DEFRAG_OVS;
+	u16 frag_max_size = 0;
+	char cb[sizeof(skb->cb)];
+
+	if (!skb_mac_header_was_set(skb))
+		skb_reset_mac_header(skb);
+
+	if (eth_hdr(skb)->h_proto != htons(ETH_P_IP))
+		return 0;
+
+	if (!ip_is_fragment(ip_hdr(skb)))
+		return 0;
+
+	memcpy(cb, skb->cb, sizeof(skb->cb));
+	memset(skb->cb, 0, sizeof(skb->cb));
+
+	skb_pull(skb, ETH_HLEN);
+	user += ((unsigned long)vport->dp + vport->port_no) % DP_MAX_PORTS;
+	if (ip_defrag(skb, user))
+		return 1;
+	skb_push(skb, ETH_HLEN);
+	ip_send_check(ip_hdr(skb));
+
+	/* "max_size != 0 implies at least one fragment had IP_DF set"
+	   (see net/ipv4/ip_fragment.c) */
+	frag_max_size = IPCB(skb)->frag_max_size;
+	memcpy(skb->cb, cb, sizeof(skb->cb));
+	OVS_CB(skb)->frag_max_size = frag_max_size;
+
+	net_info_ratelimited("REASM: net=%p dp=%s port=%s(%u) %pI4 -> %pI4 proto=%u tot_len=%u frag_max_size=%u\n",
+			     vport->dp->net,
+			     ovs_dp_name(vport->dp),
+			     vport->ops->get_name(vport),
+			     vport->port_no,
+			     &ip_hdr(skb)->saddr,
+			     &ip_hdr(skb)->daddr,
+			     ip_hdr(skb)->protocol,
+			     ntohs(ip_hdr(skb)->tot_len),
+			     frag_max_size);
+	return 0;
+}
+
 /* Must be called with rcu_read_lock. */
 void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
 {
@@ -224,6 +275,22 @@ void ovs_dp_process_received_packet(struct vport *p, struct sk_buff *skb)
 	struct sw_flow_key key;
 	u64 *stats_counter;
 	int error;
+
+	OVS_CB(skb)->frag_max_size = 0;
+
+	if (p->ipv4_reasm) {
+		switch (p->ops->type) {
+		case OVS_VPORT_TYPE_UNSPEC:
+			return;
+		case OVS_VPORT_TYPE_NETDEV:
+		case OVS_VPORT_TYPE_INTERNAL:
+			if (ovs_ip_defrag(p, skb))
+				return;
+			break;
+		default:
+			break;
+		}
+	}
 
 	stats = this_cpu_ptr(dp->stats_percpu);
 
@@ -370,6 +437,7 @@ static size_t key_attr_size(void)
 		  + nla_total_size(0)   /* OVS_TUNNEL_KEY_ATTR_CSUM */
 		+ nla_total_size(4)   /* OVS_KEY_ATTR_IN_PORT */
 		+ nla_total_size(4)   /* OVS_KEY_ATTR_SKB_MARK */
+		+ nla_total_size(2)   /* OVS_KEY_ATTR_FRAG_MAX_SIZE */
 		+ nla_total_size(12)  /* OVS_KEY_ATTR_ETHERNET */
 		+ nla_total_size(2)   /* OVS_KEY_ATTR_ETHERTYPE */
 		+ nla_total_size(4)   /* OVS_KEY_ATTR_8021Q */
@@ -1048,6 +1116,7 @@ static struct genl_ops dp_flow_genl_ops[] = {
 static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
 	[OVS_DP_ATTR_NAME] = { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
 	[OVS_DP_ATTR_UPCALL_PID] = { .type = NLA_U32 },
+	[OVS_DP_ATTR_IPV4_REASM] = { .type = NLA_FLAG },
 };
 
 static struct genl_family dp_datapath_genl_family = {
@@ -1195,6 +1264,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	parms.dp = dp;
 	parms.port_no = OVSP_LOCAL;
 	parms.upcall_portid = nla_get_u32(a[OVS_DP_ATTR_UPCALL_PID]);
+	parms.ipv4_reasm = a[OVS_DP_ATTR_IPV4_REASM];
 
 	vport = new_vport(&parms);
 	if (IS_ERR(vport)) {
@@ -1402,6 +1472,7 @@ static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
 	[OVS_VPORT_ATTR_TYPE] = { .type = NLA_U32 },
 	[OVS_VPORT_ATTR_UPCALL_PID] = { .type = NLA_U32 },
 	[OVS_VPORT_ATTR_OPTIONS] = { .type = NLA_NESTED },
+	[OVS_VPORT_ATTR_IPV4_REASM] = { .type = NLA_FLAG },
 };
 
 static struct genl_family dp_vport_genl_family = {
@@ -1437,6 +1508,9 @@ static int ovs_vport_cmd_fill_info(struct vport *vport, struct sk_buff *skb,
 	    nla_put_u32(skb, OVS_VPORT_ATTR_TYPE, vport->ops->type) ||
 	    nla_put_string(skb, OVS_VPORT_ATTR_NAME, vport->ops->get_name(vport)) ||
 	    nla_put_u32(skb, OVS_VPORT_ATTR_UPCALL_PID, vport->upcall_portid))
+		goto nla_put_failure;
+
+	if (vport->ipv4_reasm && nla_put_flag(skb, OVS_VPORT_ATTR_IPV4_REASM))
 		goto nla_put_failure;
 
 	ovs_vport_get_stats(vport, &vport_stats);
@@ -1559,6 +1633,7 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	parms.dp = dp;
 	parms.port_no = port_no;
 	parms.upcall_portid = nla_get_u32(a[OVS_VPORT_ATTR_UPCALL_PID]);
+	parms.ipv4_reasm = a[OVS_VPORT_ATTR_IPV4_REASM];
 
 	vport = new_vport(&parms);
 	err = PTR_ERR(vport);
@@ -1621,6 +1696,9 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 
 	if (a[OVS_VPORT_ATTR_UPCALL_PID])
 		vport->upcall_portid = nla_get_u32(a[OVS_VPORT_ATTR_UPCALL_PID]);
+
+	if (a[OVS_VPORT_ATTR_IPV4_REASM])
+		vport->ipv4_reasm = a[OVS_VPORT_ATTR_IPV4_REASM];
 
 	err = ovs_vport_cmd_fill_info(vport, reply, info->snd_portid,
 				      info->snd_seq, 0, OVS_VPORT_CMD_NEW);

@@ -397,6 +397,29 @@ static int __ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 	return sent;
 }
 
+static struct sk_buff *
+ovs_vlan_untag(struct sk_buff *skb)
+{
+	u16 proto, tci;
+
+	if (unlikely(eth_hdr(skb)->h_proto != htons(ETH_P_8021Q)))
+		return NULL;
+
+	tci = vlan_eth_hdr(skb)->h_vlan_TCI;
+	proto = vlan_eth_hdr(skb)->h_vlan_proto;
+
+	if (unlikely(skb_cow_head(skb, 0) != 0))
+		return NULL;
+
+	memmove((void*)vlan_eth_hdr(skb) + VLAN_HLEN,
+		(void*)skb->data, ETH_ALEN * 2);
+	skb_pull(skb, VLAN_HLEN);
+	skb_reset_mac_header(skb);
+
+        __vlan_hwaccel_put_tag(skb, proto, ntohs(tci));
+	return skb;
+}
+
 static int
 ovs_vport_fragment(struct vport *vport, struct sk_buff *skb,
 		   unsigned int frag_max_size, unsigned int mtu)
@@ -459,6 +482,16 @@ ovs_vport_fragment(struct vport *vport, struct sk_buff *skb,
 
 		memcpy(frag->cb, skb->cb, sizeof(skb->cb));
 
+		if (vlan_tx_tag_present(skb)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+			__vlan_hwaccel_put_tag(frag, skb->vlan_proto,
+                                               vlan_tx_tag_get(skb));
+#else
+			__vlan_hwaccel_put_tag(frag, htons(ETH_P_8021Q),
+                                               vlan_tx_tag_get(skb));
+#endif
+		}
+
 		sent = __ovs_vport_send(vport, frag);
 
 		left -= frag_len;
@@ -481,6 +514,7 @@ ovs_vport_fragment(struct vport *vport, struct sk_buff *skb,
 int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 {
 	unsigned int frag_max_size = 0, mtu = 0;
+	u16 encap;
 
 	if (vport->ops->type == OVS_VPORT_TYPE_NETDEV ||
 	    vport->ops->type == OVS_VPORT_TYPE_INTERNAL)
@@ -494,6 +528,17 @@ int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 			goto send;
 		else if (ntohs(ip_hdr(skb)->tot_len) > mtu)
 			goto fragment;
+	} else if (eth_hdr(skb)->h_proto == htons(ETH_P_8021Q)) {
+		encap = vlan_eth_hdr(skb)->h_vlan_encapsulated_proto;
+		if (encap == ntohs(ETH_P_IP)) {
+			if (ip_hdr(skb)->frag_off & htons(IP_DF)) {
+				goto send;
+			} else if (ntohs(ip_hdr(skb)->tot_len) > mtu) {
+				if (!ovs_vlan_untag(skb))
+					return 0;
+				goto fragment;
+			}
+		}
 	}
 
 send:

@@ -83,6 +83,7 @@ struct vport {
 	u32 upcall_portid;
 	u16 port_no;
 	bool ipv4_reasm;
+	bool ipv4_pmtud;
 
 	struct hlist_node hash_node;
 	struct hlist_node dp_hash_node;
@@ -115,6 +116,7 @@ struct vport_parms {
 	u16 port_no;
 	u32 upcall_portid;
 	bool ipv4_reasm;
+	bool ipv4_pmtud;
 };
 
 /**

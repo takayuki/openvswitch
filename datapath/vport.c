@@ -31,6 +31,8 @@
 #include <linux/rtnetlink.h>
 #include <linux/compat.h>
 #include <linux/version.h>
+#include <net/icmp.h>
+#include <net/ip.h>
 #include <net/net_namespace.h>
 
 #include "datapath.h"
@@ -138,6 +140,7 @@ struct vport *ovs_vport_alloc(int priv_size, const struct vport_ops *ops,
 	vport->upcall_portid = parms->upcall_portid;
 	vport->ops = ops;
 	vport->ipv4_reasm = parms->ipv4_reasm;
+	vport->ipv4_pmtud = parms->ipv4_pmtud;
 	INIT_HLIST_NODE(&vport->dp_hash_node);
 
 	vport->percpu_stats = alloc_percpu(struct pcpu_tstats);
@@ -503,6 +506,67 @@ ovs_vport_fragment(struct vport *vport, struct sk_buff *skb,
 	return sent;
 }
 
+static void
+icmp_frag_needed(struct vport *vport, struct sk_buff *skb, unsigned int mtu)
+{
+	unsigned int ip_hlen = sizeof(struct iphdr);
+	unsigned int icmp_hlen = sizeof(struct icmphdr);
+	unsigned int len, payload;
+	struct sk_buff *icmp;
+
+	payload = ip_hdrlen(skb) + 8;
+
+	len = ETH_HLEN + NET_IP_ALIGN + ip_hlen + icmp_hlen + payload;
+	icmp = alloc_skb(len, GFP_KERNEL);
+	if (unlikely(!icmp))
+		return;
+
+	skb_reserve(icmp, len);
+
+	skb_push(icmp, payload);
+	if (eth_hdr(skb)->h_proto == htons(ETH_P_IP)) {
+		icmp->csum = skb_copy_and_csum_bits(skb, ETH_HLEN,
+						    icmp->data, payload, 0);
+	} else {
+		kfree_skb(icmp);
+		return;
+	}
+
+	skb_push(icmp, icmp_hlen);
+	skb_reset_transport_header(icmp);
+
+	icmp_hdr(icmp)->type = ICMP_DEST_UNREACH;
+	icmp_hdr(icmp)->code = ICMP_FRAG_NEEDED;
+	icmp_hdr(icmp)->un.gateway = htonl(mtu);
+	icmp_hdr(icmp)->checksum = 0;
+	icmp->csum = csum_partial(icmp_hdr(icmp), icmp_hlen, icmp->csum);
+	icmp_hdr(icmp)->checksum = csum_fold(icmp->csum);
+
+	skb_push(icmp, ip_hlen);
+	skb_reset_network_header(icmp);
+
+	ip_hdr(icmp)->version = 4;
+	ip_hdr(icmp)->ihl = ip_hlen >> 2;
+	ip_hdr(icmp)->tos = IPTOS_PREC_INTERNETCONTROL;
+	ip_hdr(icmp)->tot_len = htons(ip_hlen + icmp_hlen + payload);
+	get_random_bytes(&ip_hdr(icmp)->id, sizeof(ip_hdr(icmp)->id));
+	ip_hdr(icmp)->frag_off = 0;
+	ip_hdr(icmp)->ttl = IPDEFTTL;
+	ip_hdr(icmp)->protocol = IPPROTO_ICMP;
+	ip_hdr(icmp)->daddr = ip_hdr(skb)->saddr;
+	ip_hdr(icmp)->saddr = ip_hdr(skb)->daddr;
+	ip_send_check(ip_hdr(icmp));
+
+	skb_push(icmp, ETH_HLEN);
+	skb_reset_mac_header(icmp);
+
+	memcpy(eth_hdr(icmp)->h_source, eth_hdr(skb)->h_dest, ETH_ALEN);
+	memcpy(eth_hdr(icmp)->h_dest, eth_hdr(skb)->h_source, ETH_ALEN);
+	eth_hdr(icmp)->h_proto = htons(ETH_P_IP);
+
+	ovs_vport_receive(vport, icmp, NULL);
+}
+
 /**
  *	ovs_vport_send - send a packet on a device
  *
@@ -525,17 +589,26 @@ int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 
 	frag_max_size = OVS_CB(skb)->pkt_key->phy.frag_max_size;
 
-	if (frag_max_size > 0)
+	if (frag_max_size > 0) {
+		if (vport->ipv4_pmtud) {
+			if (mtu > 0 && frag_max_size > mtu)
+				goto reject;
+		}
 		goto fragment;
+	}
 
 	if (!mtu)
 		goto send;
 
 	if (eth_hdr(skb)->h_proto == htons(ETH_P_IP)) {
-		if (ip_hdr(skb)->frag_off & htons(IP_DF))
-			goto send;
-		else if (ntohs(ip_hdr(skb)->tot_len) > mtu)
+		if (ip_hdr(skb)->frag_off & htons(IP_DF)) {
+			if (vport->ipv4_pmtud) {
+				if (ntohs(ip_hdr(skb)->tot_len) > mtu)
+					goto reject;
+			}
+		} else if (ntohs(ip_hdr(skb)->tot_len) > mtu) {
 			goto fragment;
+		}
 	} else if (eth_hdr(skb)->h_proto == htons(ETH_P_8021Q)) {
 		encap = vlan_eth_hdr(skb)->h_vlan_encapsulated_proto;
 		if (encap == ntohs(ETH_P_IP)) {
@@ -554,6 +627,13 @@ send:
 
 fragment:
 	return ovs_vport_fragment(vport, skb, frag_max_size, mtu);
+
+reject:
+	if (ip_hdr(skb)->protocol != IPPROTO_ICMP ||
+	    (icmp_hdr(skb)->type == ICMP_ECHO ||
+	     icmp_hdr(skb)->type == ICMP_ECHOREPLY))
+		icmp_frag_needed(vport, skb, mtu);
+	return 0;
 }
 
 

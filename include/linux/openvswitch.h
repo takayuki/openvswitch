@@ -231,6 +231,7 @@ enum ovs_vport_attr {
 	OVS_VPORT_ATTR_UPCALL_PID, /* u32 Netlink PID to receive upcalls */
 	OVS_VPORT_ATTR_STATS,	/* struct ovs_vport_stats */
 	OVS_VPORT_ATTR_IPV4_REASM, /* Flag to reassemble fragments */
+	OVS_VPORT_ATTR_IPV4_PMTUD, /* Flag to enable Path MTU Discovery */
 	__OVS_VPORT_ATTR_MAX
 };
 

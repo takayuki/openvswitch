@@ -527,6 +527,11 @@ icmp_frag_needed(struct vport *vport, struct sk_buff *skb, unsigned int mtu)
 	if (eth_hdr(skb)->h_proto == htons(ETH_P_IP)) {
 		icmp->csum = skb_copy_and_csum_bits(skb, ETH_HLEN,
 						    icmp->data, payload, 0);
+	} else if (eth_hdr(skb)->h_proto == htons(ETH_P_8021Q)) {
+		icmp->csum = skb_copy_and_csum_bits(skb, VLAN_ETH_HLEN,
+						    icmp->data, payload, 0);
+                __vlan_hwaccel_put_tag(icmp, eth_hdr(skb)->h_proto,
+                                       ntohs(vlan_eth_hdr(skb)->h_vlan_TCI));
 	} else {
 		kfree_skb(icmp);
 		return;
@@ -613,7 +618,10 @@ int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 		encap = vlan_eth_hdr(skb)->h_vlan_encapsulated_proto;
 		if (encap == ntohs(ETH_P_IP)) {
 			if (ip_hdr(skb)->frag_off & htons(IP_DF)) {
-				goto send;
+				if (vport->ipv4_pmtud) {
+					if (ntohs(ip_hdr(skb)->tot_len) > mtu)
+						goto reject;
+				}
 			} else if (ntohs(ip_hdr(skb)->tot_len) > mtu) {
 				if (!ovs_vlan_untag(skb))
 					return 0;

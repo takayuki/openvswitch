@@ -1129,6 +1129,7 @@ static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
 	[OVS_DP_ATTR_NAME] = { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
 	[OVS_DP_ATTR_UPCALL_PID] = { .type = NLA_U32 },
 	[OVS_DP_ATTR_IPV4_REASM] = { .type = NLA_FLAG },
+	[OVS_DP_ATTR_IPV4_PMTUD] = { .type = NLA_FLAG },
 };
 
 static struct genl_family dp_datapath_genl_family = {
@@ -1277,6 +1278,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	parms.port_no = OVSP_LOCAL;
 	parms.upcall_portid = nla_get_u32(a[OVS_DP_ATTR_UPCALL_PID]);
 	parms.ipv4_reasm = a[OVS_DP_ATTR_IPV4_REASM];
+	parms.ipv4_pmtud = a[OVS_DP_ATTR_IPV4_PMTUD];
 
 	vport = new_vport(&parms);
 	if (IS_ERR(vport)) {
@@ -1485,6 +1487,7 @@ static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
 	[OVS_VPORT_ATTR_UPCALL_PID] = { .type = NLA_U32 },
 	[OVS_VPORT_ATTR_OPTIONS] = { .type = NLA_NESTED },
 	[OVS_VPORT_ATTR_IPV4_REASM] = { .type = NLA_FLAG },
+	[OVS_VPORT_ATTR_IPV4_PMTUD] = { .type = NLA_FLAG },
 };
 
 static struct genl_family dp_vport_genl_family = {
@@ -1523,6 +1526,9 @@ static int ovs_vport_cmd_fill_info(struct vport *vport, struct sk_buff *skb,
 		goto nla_put_failure;
 
 	if (vport->ipv4_reasm && nla_put_flag(skb, OVS_VPORT_ATTR_IPV4_REASM))
+		goto nla_put_failure;
+
+	if (vport->ipv4_reasm && nla_put_flag(skb, OVS_VPORT_ATTR_IPV4_PMTUD))
 		goto nla_put_failure;
 
 	ovs_vport_get_stats(vport, &vport_stats);
@@ -1646,6 +1652,7 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	parms.port_no = port_no;
 	parms.upcall_portid = nla_get_u32(a[OVS_VPORT_ATTR_UPCALL_PID]);
 	parms.ipv4_reasm = a[OVS_VPORT_ATTR_IPV4_REASM];
+	parms.ipv4_pmtud = a[OVS_VPORT_ATTR_IPV4_PMTUD];
 
 	vport = new_vport(&parms);
 	err = PTR_ERR(vport);

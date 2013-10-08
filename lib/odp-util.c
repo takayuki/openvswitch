@@ -103,6 +103,7 @@ ovs_key_attr_to_string(enum ovs_key_attr attr, char *namebuf, size_t bufsize)
     case OVS_KEY_ATTR_SKB_MARK: return "skb_mark";
     case OVS_KEY_ATTR_TUNNEL: return "tunnel";
     case OVS_KEY_ATTR_IN_PORT: return "in_port";
+    case OVS_KEY_ATTR_FRAG_MAX_SIZE: return "frag_max_size";
     case OVS_KEY_ATTR_ETHERNET: return "eth";
     case OVS_KEY_ATTR_VLAN: return "vlan";
     case OVS_KEY_ATTR_ETHERTYPE: return "eth_type";
@@ -740,6 +741,7 @@ odp_flow_key_attr_len(uint16_t type)
     case OVS_KEY_ATTR_SKB_MARK: return 4;
     case OVS_KEY_ATTR_TUNNEL: return -2;
     case OVS_KEY_ATTR_IN_PORT: return 4;
+    case OVS_KEY_ATTR_FRAG_MAX_SIZE: return 2;
     case OVS_KEY_ATTR_ETHERNET: return sizeof(struct ovs_key_ethernet);
     case OVS_KEY_ATTR_VLAN: return sizeof(ovs_be16);
     case OVS_KEY_ATTR_ETHERTYPE: return 2;
@@ -1092,6 +1094,13 @@ format_odp_key_attr(const struct nlattr *a, const struct nlattr *ma,
             if (!is_exact) {
                 ds_put_format(ds, "/%#"PRIx32, nl_attr_get_u32(ma));
             }
+        }
+        break;
+
+    case OVS_KEY_ATTR_FRAG_MAX_SIZE:
+        ds_put_format(ds, "%"PRIu16, nl_attr_get_u16(a));
+        if (!is_exact) {
+            ds_put_format(ds, "/%#"PRIx16, nl_attr_get_u16(ma));
         }
         break;
 
@@ -1709,6 +1718,24 @@ parse_odp_key_mask_attr(const char *s, const struct simap *port_names,
         }
     }
 
+    {
+        unsigned long long int frag_max_size;
+        unsigned long long int frag_max_size_mask;
+        int n = -1;
+
+        if (mask && sscanf(s, "frag_max_size(%lli/%lli)%n", &frag_max_size,
+                   &frag_max_size_mask, &n) > 0 && n > 0) {
+            nl_msg_put_u16(key, OVS_KEY_ATTR_FRAG_MAX_SIZE, frag_max_size);
+            nl_msg_put_u16(mask, OVS_KEY_ATTR_FRAG_MAX_SIZE, frag_max_size_mask);
+            return n;
+        } else if (sscanf(s, "frag_max_size(%lli)%n", &frag_max_size, &n) > 0 && n > 0) {
+            nl_msg_put_u16(key, OVS_KEY_ATTR_FRAG_MAX_SIZE, frag_max_size);
+            if (mask) {
+                nl_msg_put_u16(mask, OVS_KEY_ATTR_FRAG_MAX_SIZE, UINT16_MAX);
+            }
+            return n;
+        }
+    }
 
     if (port_names && !strncmp(s, "in_port(", 8)) {
         const char *name;

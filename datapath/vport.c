@@ -427,7 +427,8 @@ ovs_vport_fragment(struct vport *vport, struct sk_buff *skb,
 	unsigned int ip_hlen = ip_hdrlen(skb);
 	unsigned int flag = ntohs(ip_hdr(skb)->frag_off) & IP_DF;
 	unsigned int left = ntohs(ip_hdr(skb)->tot_len) - ip_hlen;
-	unsigned int frag_max = (mtu - ip_hlen) & ~7;
+	unsigned int frag_max = ((frag_max_size > 0 ? frag_max_size : mtu)
+				 - ip_hlen) & ~7;
 	unsigned int frag_off = 0;
 	unsigned int frag_len;
 	struct sk_buff *frag;
@@ -516,9 +517,16 @@ int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 	unsigned int frag_max_size = 0, mtu = 0;
 	u16 encap;
 
+	BUG_ON(!OVS_CB(skb));
+
 	if (vport->ops->type == OVS_VPORT_TYPE_NETDEV ||
 	    vport->ops->type == OVS_VPORT_TYPE_INTERNAL)
 		mtu = netdev_vport_priv(vport)->dev->mtu;
+
+	frag_max_size = OVS_CB(skb)->pkt_key->phy.frag_max_size;
+
+	if (frag_max_size > 0)
+		goto fragment;
 
 	if (!mtu)
 		goto send;

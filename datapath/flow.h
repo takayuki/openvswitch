@@ -72,6 +72,7 @@ struct sw_flow_key {
 		u32	priority;	/* Packet QoS priority. */
 		u32	skb_mark;	/* SKB mark. */
 		u16	in_port;	/* Input switch port (or DP_MAX_PORTS). */
+		u16	frag_max_size;  /* IP fragment size with IP_DF flag */
 	} phy;
 	struct {
 		u8     src[ETH_ALEN];	/* Ethernet source address. */

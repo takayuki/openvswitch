@@ -229,6 +229,7 @@ static const int ovs_key_lens[OVS_KEY_ATTR_MAX + 1] = {
 	[OVS_KEY_ATTR_PRIORITY] = sizeof(u32),
 	[OVS_KEY_ATTR_IN_PORT] = sizeof(u32),
 	[OVS_KEY_ATTR_SKB_MARK] = sizeof(u32),
+	[OVS_KEY_ATTR_FRAG_MAX_SIZE] = sizeof(u16),
 	[OVS_KEY_ATTR_ETHERNET] = sizeof(struct ovs_key_ethernet),
 	[OVS_KEY_ATTR_VLAN] = sizeof(__be16),
 	[OVS_KEY_ATTR_ETHERTYPE] = sizeof(__be16),
@@ -475,6 +476,12 @@ static int metadata_from_nlattrs(struct sw_flow_match *match,  u64 *attrs,
 					 is_mask))
 			return -EINVAL;
 		*attrs &= ~(1ULL << OVS_KEY_ATTR_TUNNEL);
+	}
+	if (*attrs & (1ULL << OVS_KEY_ATTR_FRAG_MAX_SIZE)) {
+		u16 frag_max_size = nla_get_u16(a[OVS_KEY_ATTR_FRAG_MAX_SIZE]);
+		SW_FLOW_KEY_PUT(match, phy.frag_max_size,
+				frag_max_size, is_mask);
+		*attrs &= ~(1ULL << OVS_KEY_ATTR_FRAG_MAX_SIZE);
 	}
 	return 0;
 }
@@ -906,6 +913,10 @@ int ovs_nla_put_flow(const struct sw_flow_key *swkey,
 	}
 
 	if (nla_put_u32(skb, OVS_KEY_ATTR_SKB_MARK, output->phy.skb_mark))
+		goto nla_put_failure;
+
+	if (nla_put_u16(skb, OVS_KEY_ATTR_FRAG_MAX_SIZE,
+			output->phy.frag_max_size))
 		goto nla_put_failure;
 
 	nla = nla_reserve(skb, OVS_KEY_ATTR_ETHERNET, sizeof(*eth_key));

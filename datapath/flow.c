@@ -366,6 +366,7 @@ int ovs_flow_extract(struct sk_buff *skb, u16 in_port, struct sw_flow_key *key)
 		memcpy(&key->tun_key, OVS_CB(skb)->tun_key, sizeof(key->tun_key));
 	key->phy.in_port = in_port;
 	key->phy.skb_mark = skb->mark;
+	key->phy.frag_max_size = OVS_CB(skb)->frag_max_size;
 
 	skb_reset_mac_header(skb);
 

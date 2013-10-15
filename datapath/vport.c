@@ -16,6 +16,8 @@
  * 02110-1301, USA
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/etherdevice.h>
 #include <linux/if.h>
 #include <linux/if_vlan.h>
@@ -34,6 +36,7 @@
 #include "datapath.h"
 #include "vport.h"
 #include "vport-internal_dev.h"
+#include "vport-netdev.h"
 
 /* List of statically compiled vport implementations.  Don't forget to also
  * add yours to the list at the bottom of vport.h. */
@@ -372,16 +375,7 @@ void ovs_vport_receive(struct vport *vport, struct sk_buff *skb,
 	ovs_dp_process_received_packet(vport, skb);
 }
 
-/**
- *	ovs_vport_send - send a packet on a device
- *
- * @vport: vport on which to send the packet
- * @skb: skb to send
- *
- * Sends the given packet and returns the length of data sent.  Either ovs
- * lock or rcu_read_lock must be held.
- */
-int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
+static int __ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 {
 	int sent = vport->ops->send(vport, skb);
 
@@ -402,6 +396,113 @@ int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
 
 	return sent;
 }
+
+static int
+ovs_vport_fragment(struct vport *vport, struct sk_buff *skb,
+		   unsigned int frag_max_size, unsigned int mtu)
+{
+	unsigned int ip_hlen = ip_hdrlen(skb);
+	unsigned int flag = ntohs(ip_hdr(skb)->frag_off) & IP_DF;
+	unsigned int left = ntohs(ip_hdr(skb)->tot_len) - ip_hlen;
+	unsigned int frag_max = (mtu - ip_hlen) & ~7;
+	unsigned int frag_off = 0;
+	unsigned int frag_len;
+	struct sk_buff *frag;
+	int sent = 0;
+
+	net_info_ratelimited("FRAG: net=%p dp=%s port=%s(%u) %pI4 -> %pI4 proto=%u tot_len=%u frag_max_size=%u mtu=%u\n",
+			     vport->dp->net,
+			     ovs_dp_name(vport->dp),
+			     vport->ops->get_name(vport),
+			     vport->port_no,
+			     &ip_hdr(skb)->saddr,
+			     &ip_hdr(skb)->daddr,
+			     ip_hdr(skb)->protocol,
+			     ntohs(ip_hdr(skb)->tot_len),
+			     frag_max_size,
+			     mtu);
+
+	while (left > 0) {
+		unsigned int len;
+
+		if (left > frag_max) {
+			flag |= IP_MF;
+			frag_len = frag_max;
+		} else {
+			flag &= ~IP_MF;
+			frag_len = left;
+		}
+
+		len = ETH_HLEN + NET_IP_ALIGN + ip_hlen + frag_len;
+		frag = alloc_skb(len, GFP_KERNEL);
+		if (unlikely(!frag))
+			return sent;
+
+		skb_reserve(frag, len);
+
+		skb_push(frag, frag_len);
+		skb_copy_bits(skb, ETH_HLEN + ip_hlen + frag_off, frag->data,
+			      frag_len);
+
+		skb_push(frag, ip_hlen);
+		skb_copy_bits(skb, ETH_HLEN, frag->data, ip_hlen);
+		skb_reset_network_header(frag);
+
+		ip_hdr(frag)->tot_len = htons(ip_hlen + frag_len);
+		ip_hdr(frag)->frag_off = htons((frag_off >> 3) & IP_OFFSET);
+		ip_hdr(frag)->frag_off |= htons(flag);
+		ip_send_check(ip_hdr(frag));
+
+		skb_push(frag, ETH_HLEN);
+		skb_copy_bits(skb, 0, frag->data, ETH_HLEN);
+		skb_reset_mac_header(frag);
+
+		memcpy(frag->cb, skb->cb, sizeof(skb->cb));
+
+		sent = __ovs_vport_send(vport, frag);
+
+		left -= frag_len;
+		frag_off += frag_len;
+	}
+
+	kfree_skb(skb);
+	return sent;
+}
+
+/**
+ *	ovs_vport_send - send a packet on a device
+ *
+ * @vport: vport on which to send the packet
+ * @skb: skb to send
+ *
+ * Sends the given packet and returns the length of data sent.  Either ovs
+ * lock or rcu_read_lock must be held.
+ */
+int ovs_vport_send(struct vport *vport, struct sk_buff *skb)
+{
+	unsigned int frag_max_size = 0, mtu = 0;
+
+	if (vport->ops->type == OVS_VPORT_TYPE_NETDEV ||
+	    vport->ops->type == OVS_VPORT_TYPE_INTERNAL)
+		mtu = netdev_vport_priv(vport)->dev->mtu;
+
+	if (!mtu)
+		goto send;
+
+	if (eth_hdr(skb)->h_proto == htons(ETH_P_IP)) {
+		if (ip_hdr(skb)->frag_off & htons(IP_DF))
+			goto send;
+		else if (ntohs(ip_hdr(skb)->tot_len) > mtu)
+			goto fragment;
+	}
+
+send:
+	return __ovs_vport_send(vport, skb);
+
+fragment:
+	return ovs_vport_fragment(vport, skb, frag_max_size, mtu);
+}
+
 
 /**
  *	ovs_vport_record_error - indicate device error to generic stats layer
